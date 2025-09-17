@@ -6,8 +6,8 @@
  * Twilio constants
  */
 export const TWILIO_WHATSAPP_FROM = 'whatsapp:+14155238886';
-export const TWILIO_QUICKREPLY2_SID = 'HXd3617403bdef70f5979d498fcfb82165';
-export const TWILIO_QUICKREPLY3_SID = 'HX60e62906ce18d4b64ac6d214fac74d8a';
+export const TWILIO_QUICKREPLY2_SID = 'HX6c6c260dd71fc49fa19afdef5692cb9d'; // 2-button template
+export const TWILIO_QUICKREPLY3_SID = 'HX90784e01c2facb3f9aa4e77b118290a5'; // 3-button template
 
 /**
  * Media links

@@ -13,7 +13,7 @@ const globalForRedis = global as unknown as { redis: ReturnType<typeof createCli
  * Singleton pattern prevents multiple connections during hot reloading in development.
  */
 export const redis = globalForRedis.redis || createClient({
-  url: process.env.REDIS_URL || 'redis://localhost:6379'
+  url: process.env.REDIS_URL || 'redis://redis-server:6379'
 });
 
 redis.on('error', (err) => logger.error({ err: err.message }, 'Redis client error'));
