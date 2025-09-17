@@ -1,13 +1,13 @@
 /**
  * Defines the possible roles in a conversation.
  */
-export type Role = 'system' | 'user' | 'assistant' | 'tool';
+export type Role = "system" | "user" | "assistant" | "tool";
 
 /**
  * Represents a text part of a message's content.
  */
 export type TextPart = {
-  type: 'text';
+  type: "text";
   text: string;
 };
 
@@ -15,12 +15,12 @@ export type TextPart = {
  * Represents an image part of a message's content.
  */
 export type ImagePart = {
-  type: 'image_url';
+  type: "image_url";
   image_url: {
     /** The URL of the image, which can be a web URL or a base64-encoded data URI. */
     url: string;
     /** The level of detail to use for the image. Defaults to 'auto'. */
-    detail?: 'low' | 'high' | 'auto';
+    detail?: "low" | "high" | "auto";
   };
 };
 
@@ -55,12 +55,20 @@ export class BaseMessage {
   ) {
     this.role = role;
     this.content =
-      typeof content === 'string'
-        ? [{ type: 'text', text: content }]
-        : content;
+      typeof content === "string" ? [{ type: "text", text: content }] : content;
     this.name = name;
     this.tool_call_id = tool_call_id;
     this.meta = meta;
+  }
+
+  toJSON() {
+    return {
+      role: this.role,
+      content: this.content,
+      name: this.name,
+      tool_call_id: this.tool_call_id,
+      meta: this.meta,
+    };
   }
 }
 
@@ -74,7 +82,7 @@ export class BaseMessage {
  */
 export class SystemMessage extends BaseMessage {
   constructor(content: string) {
-    super('system', content);
+    super("system", content);
   }
 }
 
@@ -96,7 +104,7 @@ export class SystemMessage extends BaseMessage {
  */
 export class UserMessage extends BaseMessage {
   constructor(content: string | MessageContent) {
-    super('user', content);
+    super("user", content);
   }
 }
 
@@ -110,7 +118,7 @@ export class UserMessage extends BaseMessage {
  */
 export class AssistantMessage extends BaseMessage {
   constructor(content: string) {
-    super('assistant', content);
+    super("assistant", content);
   }
 }
 
@@ -134,7 +142,7 @@ export class ToolMessage extends BaseMessage {
     name?: string,
     isError?: boolean,
   ) {
-    super('tool', content, name, tool_call_id, { isError });
+    super("tool", content, name, tool_call_id, { isError });
   }
 
   /**

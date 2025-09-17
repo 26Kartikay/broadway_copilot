@@ -1,28 +1,40 @@
-import { createClient } from 'redis';
+import { createClient } from "redis";
 
-import { logger }  from '../utils/logger';
+import { logger } from "../utils/logger";
 
 /**
  * Global Redis client instance with connection management and error handling.
  * Uses singleton pattern to prevent multiple connections in development.
  */
-const globalForRedis = global as unknown as { redis: ReturnType<typeof createClient> };
+const globalForRedis = global as unknown as {
+  redis: ReturnType<typeof createClient>;
+};
 
 /**
  * Redis client instance configured with connection URL from environment.
  * Singleton pattern prevents multiple connections during hot reloading in development.
  */
+<<<<<<< HEAD
 export const redis = globalForRedis.redis || createClient({
   url: process.env.REDIS_URL || 'redis://redis-server:6379'
 });
+=======
+export const redis =
+  globalForRedis.redis ||
+  createClient({
+    url: process.env.REDIS_URL || "redis://localhost:6379",
+  });
+>>>>>>> c7505139de3e73be7ea7228ba8f4d88ea581b82e
 
-redis.on('error', (err) => logger.error({ err: err.message }, 'Redis client error'));
-redis.on('connect', () => logger.info('Redis client connected'));
-redis.on('disconnect', () => logger.warn('Redis client disconnected'));
-redis.on('reconnecting', () => logger.info('Redis client reconnecting'));
-redis.on('ready', () => logger.info('Redis client ready'));
+redis.on("error", (err) =>
+  logger.error({ err: err.message }, "Redis client error"),
+);
+redis.on("connect", () => logger.info("Redis client connected"));
+redis.on("disconnect", () => logger.warn("Redis client disconnected"));
+redis.on("reconnecting", () => logger.info("Redis client reconnecting"));
+redis.on("ready", () => logger.info("Redis client ready"));
 
-if (process.env.NODE_ENV !== 'production') {
+if (process.env.NODE_ENV !== "production") {
   globalForRedis.redis = redis;
 }
 
@@ -37,10 +49,13 @@ export const connectRedis = async (): Promise<void> => {
     try {
       await redis.connect();
     } catch (err: any) {
-      logger.error({ err: err.message, url: process.env.REDIS_URL }, 'Failed to connect to Redis');
+      logger.error(
+        { err: err.message, url: process.env.REDIS_URL },
+        "Failed to connect to Redis",
+      );
       throw err;
     }
   } else {
-    logger.debug('Redis client already connected');
+    logger.debug("Redis client already connected");
   }
 };

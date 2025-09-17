@@ -1,4 +1,4 @@
-import { ZodType } from 'zod';
+import { ZodType } from "zod";
 import {
   BaseMessage,
   ToolMessage,
@@ -6,10 +6,10 @@ import {
   AssistantMessage,
   UserMessage,
   TextPart,
-} from '../core/messages';
-import { Tool } from '../core/tools';
-import { BaseChatModel } from '../core/base_chat_model';
-import { logger } from '../../../utils/logger';
+} from "../core/messages";
+import { Tool } from "../core/tools";
+import { BaseChatModel } from "../core/base_chat_model";
+import { TraceBuffer } from "../../../agent/tracing";
 
 const MAX_ITERATIONS = 5;
 
@@ -27,29 +27,35 @@ async function getFinalStructuredOutput<T extends ZodType>(
   runner: BaseChatModel,
   conversation: BaseMessage[],
   outputSchema: T,
-): Promise<T['_output']> {
+  traceBuffer: TraceBuffer,
+  nodeName?: string,
+): Promise<T["_output"]> {
   const lastMessage = conversation[conversation.length - 1];
 
   // If the last message is an assistant's message, use it for parsing.
   if (lastMessage instanceof AssistantMessage) {
     const customPrompt = new SystemMessage(
-      'Parse the user message which contains the output from a previous step into a JSON object ' +
-      'that strictly adheres to the provided schema. ' +
-      'Do not add any extra commentary or change any of the values.',
+      "Parse the user message which contains the output from a previous step into a JSON object " +
+        "that strictly adheres to the provided schema. " +
+        "Do not add any extra commentary or change any of the values.",
     );
 
     const textContent = lastMessage.content
-      .filter((p): p is TextPart => p.type === 'text')
-      .map(p => p.text)
-      .join('');
+      .filter((p): p is TextPart => p.type === "text")
+      .map((p) => p.text)
+      .join("");
 
     const parsingConversation: BaseMessage[] = [new UserMessage(textContent)];
 
     const structuredRunner = runner.withStructuredOutput(outputSchema);
-    return await structuredRunner.run(customPrompt, parsingConversation);
-  }
-  else {
-    throw new Error('Last message is not an assistant message');
+    return await structuredRunner.run(
+      customPrompt,
+      parsingConversation,
+      traceBuffer,
+      nodeName,
+    );
+  } else {
+    throw new Error("Last message is not an assistant message");
   }
 }
 
@@ -67,21 +73,27 @@ async function getFinalStructuredOutput<T extends ZodType>(
  *
  * @example
  * ```typescript
- * const weatherTool: Tool<{ location: string }> = {
+ * import { z } from 'zod';
+ * import { Tool } from '../core/tools';
+ * import { ChatOpenAI } from '../openai/chat_models';
+ *
+ * const model = new ChatOpenAI({ model: 'gpt-4o-mini' });
+ * const weatherTool = new Tool({
  *   name: 'get_weather',
  *   description: 'Get weather for a location',
  *   schema: z.object({ location: z.string() }),
  *   func: async ({ location }) => `The weather in ${location} is sunny.`,
- * };
+ * });
  *
  * const output = await agentExecutor(
  *   model,
- *   'You are a helpful weather assistant.',
+ *   new SystemMessage('You are a helpful weather assistant.'),
  *   [new UserMessage('What is the weather in New York?')],
  *   {
  *     tools: [weatherTool],
  *     outputSchema: z.object({ weather: z.string() })
- *   }
+ *   },
+ *   'some-graph-run-id'
  * );
  *
  * // output.weather might be: "The weather in New York is sunny."
@@ -91,14 +103,14 @@ export async function agentExecutor<T extends ZodType>(
   runner: BaseChatModel,
   systemPrompt: SystemMessage,
   history: BaseMessage[],
-  options: { tools: Tool<any>[]; outputSchema: T },
+  options: {
+    tools: Tool<any>[];
+    outputSchema: T;
+    nodeName?: string;
+  },
+  traceBuffer: TraceBuffer,
   maxLoops: number = MAX_ITERATIONS,
-): Promise<T['_output']> {
-  logger.debug(
-    { toolCount: options.tools.length, maxLoops },
-    '[AgentExecutor] Starting',
-  );
-  
+): Promise<T["_output"]> {
   const runnerWithTools = runner.bind(options.tools);
 
   const conversation: BaseMessage[] = [...history];
@@ -106,84 +118,60 @@ export async function agentExecutor<T extends ZodType>(
   const seenToolCallIds = new Set<string>();
 
   for (let i = 0; i < maxLoops; i++) {
-    logger.debug({ loop: i + 1, maxLoops }, '[AgentExecutor] Loop');
     const { assistant, toolCalls } = await runnerWithTools.run(
       systemPrompt,
       conversation,
+      traceBuffer,
+      options.nodeName,
     );
 
-    logger.debug(
-      { toolCallCount: toolCalls?.length || 0 },
-      '[AgentExecutor] Received tool calls',
-    );
-    
     conversation.push(assistant);
 
     if (!toolCalls || toolCalls.length === 0) {
-      logger.debug(
-        '[AgentExecutor] No tool calls, generating final structured output',
-      );
-      return await getFinalStructuredOutput(
-        runner,
-        conversation,
-        options.outputSchema,
-      );
-    }
-
-    // Filter out tool calls that have already been executed
-    const newToolCalls = toolCalls.filter(
-      toolCall => !seenToolCallIds.has(toolCall.id),
-    );
-
-    // Mark new tool calls as seen
-    newToolCalls.forEach(toolCall => seenToolCallIds.add(toolCall.id));
-
-    if (newToolCalls.length === 0) {
-      return await getFinalStructuredOutput(
-        runner,
-        conversation,
-        options.outputSchema,
-      );
+      break;
     }
 
     const toolResults = await Promise.all(
-      newToolCalls.map(async toolCall => {
-        const toolDef = options.tools.find(t => t.name === toolCall.name);
-        if (!toolDef) {
-          return {
-            id: toolCall.id,
-            name: toolCall.name,
-            result: `Tool '${toolCall.name}' not found.`,
-            isError: true,
-          };
-        }
-        try {
-          const parsedArgs = toolDef.schema.parse(toolCall.arguments);
-          const result = await Promise.resolve(toolDef.func(parsedArgs));
-          return {
-            id: toolCall.id,
-            name: toolDef.name,
-            result,
-            isError: false,
-          };
-        } catch (error) {
-          logger.error(
-            { err: error, toolName: toolCall.name },
-            'Error executing tool',
-          );
-          return {
-            id: toolCall.id,
-            name: toolCall.name,
-            result: `Error executing tool '${toolCall.name}': ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-            isError: true,
-          };
-        }
-      })
+      toolCalls
+        .filter((toolCall) => !seenToolCallIds.has(toolCall.id))
+        .map(async (toolCall) => {
+          seenToolCallIds.add(toolCall.id);
+          const toolDef = options.tools.find((t) => t.name === toolCall.name);
+          if (!toolDef) {
+            return {
+              id: toolCall.id,
+              name: toolCall.name,
+              result: `Tool '${toolCall.name}' not found.`,
+              isError: true,
+            };
+          }
+          try {
+            const parsedArgs = toolDef.schema.parse(toolCall.arguments);
+            const result = await Promise.resolve(toolDef.func(parsedArgs));
+            return {
+              id: toolCall.id,
+              name: toolDef.name,
+              result,
+              isError: false,
+            };
+          } catch (error) {
+            return {
+              id: toolCall.id,
+              name: toolCall.name,
+              result: `Error executing tool '${toolCall.name}': ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+              isError: true,
+            };
+          }
+        }),
     );
 
-    toolResults.forEach(toolResult => {
+    if (toolResults.length === 0) {
+      break;
+    }
+
+    toolResults.forEach((toolResult) => {
       conversation.push(
         new ToolMessage(
           JSON.stringify(toolResult.result, null, 2),
@@ -199,5 +187,7 @@ export async function agentExecutor<T extends ZodType>(
     runner,
     conversation,
     options.outputSchema,
+    traceBuffer,
+    options.nodeName,
   );
 }
