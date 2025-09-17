@@ -1,14 +1,8 @@
 datasource db {
-<<<<<<< HEAD
   provider = "postgresql"
   url      = env("DATABASE_URL")
   extensions = [ vector(version: "0.8.1") ]
-=======
-  provider   = "postgresql"
-  url        = env("DATABASE_URL")
-  extensions = [vector(version: "0.8.0")]
->>>>>>> c7505139de3e73be7ea7228ba8f4d88ea581b82e
-}
+  }
 
 generator client {
   provider        = "prisma-client-js"
