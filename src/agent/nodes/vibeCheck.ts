@@ -1,73 +1,55 @@
-import { z } from "zod";
+import { z } from 'zod';
 
-import { prisma } from "../../lib/prisma";
-import { getVisionLLM, getTextLLM } from "../../lib/ai";
-import { SystemMessage } from "../../lib/ai/core/messages";
-import { queueWardrobeIndex } from "../../lib/tasks";
-import { numImagesInMessage } from "../../utils/context";
-import { loadPrompt } from "../../utils/prompts";
-import { logger } from "../../utils/logger";
+import { getTextLLM, getVisionLLM } from '../../lib/ai';
+import { SystemMessage } from '../../lib/ai/core/messages';
+import { prisma } from '../../lib/prisma';
+import { queueWardrobeIndex } from '../../lib/tasks';
+import { numImagesInMessage } from '../../utils/context';
+import { loadPrompt } from '../../utils/prompts';
 
-import { Replies } from "../state";
-import { GraphState } from "../state";
-import { InternalServerError } from "../../utils/errors";
-import { PendingType } from "@prisma/client";
+import { PendingType, Prisma } from '@prisma/client';
+import { InternalServerError } from '../../utils/errors';
+import { GraphState, Replies } from '../state';
 
 /**
- * Rates outfit from an image and returns a concise text summary; logs and persists results.
+ * Shared scoring schema for each evaluation category
  */
-const VibeCategorySchema = z.object({
-  heading: z
-    .string()
-    .describe(
-      "The name of the scoring category (e.g., 'Fit & Silhouette', 'Color Harmony').",
-    ),
+const ScoringCategorySchema = z.object({
   score: z
     .number()
     .min(0)
     .max(10)
-    .describe("The score for this category, from 0 to 10."),
+    .describe('Score as a fractional number between 0 and 10.'),
+  explanation: z
+    .string()
+    .describe('A short explanation for this score.'),
 });
 
+/**
+ * New LLM output schema for vibe check
+ */
 const LLMOutputSchema = z.object({
-  vibe_score: z
+  comment: z.string().describe("Overall comment or reason summarizing the outfit's vibe."),
+  fit_silhouette: ScoringCategorySchema.describe("Assessment of fit & silhouette."),
+  color_harmony: ScoringCategorySchema.describe("Assessment of color coordination."),
+  styling_details: ScoringCategorySchema.describe("Assessment of accessories, layers, and details."),
+  context_confidence: ScoringCategorySchema.describe("How confident the outfit fits the occasion."),
+  overall_score: z
     .number()
     .min(0)
     .max(10)
-    .nullable()
-    .describe(
-      "The overall vibe score from 0 to 10. Null if the image is unsuitable.",
-    ),
-  vibe_reply: z
-    .string()
-    .describe(
-      "A short, witty, and punchy reply about the outfit's vibe (under 8 words).",
-    ),
-  categories: z
-    .array(VibeCategorySchema)
-    .length(4)
-    .describe(
-      "An array of exactly 4 scoring categories, each with a heading and a score.",
-    ),
-  message1_text: z
-    .string()
-    .describe(
-      "The main reply message that is compliment-forward and provides a brief rationale for the score.",
-    ),
-  message2_text: z
-    .string()
-    .nullable()
-    .describe(
-      "An optional, short follow-up question to suggest a next step (e.g., 'Want some tips to elevate this look?').",
-    ),
+    .describe("Overall fractional score for the outfit."),
+  recommendations: z
+    .array(z.string())
+    .describe("Actionable style suggestions."),
+  prompt: z.string().describe("The original input prompt or context."),
+  follow_up: z.string().describe("Follow-up question or suggestion."),
 });
 
 const NoImageLLMOutputSchema = z.object({
   reply_text: z
     .string()
-    .describe(
-      "The text to send to the user explaining they need to send an image.",
-    ),
+    .describe('The text to send to the user explaining they need to send an image.'),
 });
 
 export async function vibeCheck(state: GraphState): Promise<GraphState> {
@@ -75,28 +57,17 @@ export async function vibeCheck(state: GraphState): Promise<GraphState> {
   try {
     const imageCount = numImagesInMessage(state.conversationHistoryWithImages);
 
+    // Handle case: no image sent
     if (imageCount === 0) {
-      const systemPromptText = await loadPrompt(
-        "handlers/analysis/no_image_request.txt",
-      );
+      const systemPromptText = await loadPrompt('handlers/analysis/no_image_request.txt');
       const systemPrompt = new SystemMessage(
-        systemPromptText.replace("{analysis_type}", "vibe check"),
+        systemPromptText.replace('{analysis_type}', 'vibe check'),
       );
       const response = await getTextLLM()
         .withStructuredOutput(NoImageLLMOutputSchema)
-        .run(
-          systemPrompt,
-          state.conversationHistoryTextOnly,
-          state.traceBuffer,
-          "vibeCheck",
-        );
-      logger.debug(
-        { userId, reply_text: response.reply_text },
-        "Invoking text LLM for no-image response",
-      );
-      const replies: Replies = [
-        { reply_type: "text", reply_text: response.reply_text },
-      ];
+        .run(systemPrompt, state.conversationHistoryTextOnly, state.traceBuffer, 'vibeCheck');
+
+      const replies: Replies = [{ reply_type: 'text', reply_text: response.reply_text }];
       return {
         ...state,
         assistantReply: replies,
@@ -104,82 +75,79 @@ export async function vibeCheck(state: GraphState): Promise<GraphState> {
       };
     }
 
-    const systemPromptText = await loadPrompt(
-      "handlers/analysis/vibe_check.txt",
-    );
+    // Normal flow: with image
+    const systemPromptText = await loadPrompt('handlers/analysis/vibe_check.txt');
     const systemPrompt = new SystemMessage(systemPromptText);
 
     const result = await getVisionLLM()
       .withStructuredOutput(LLMOutputSchema)
-      .run(
-        systemPrompt,
-        state.conversationHistoryWithImages,
-        state.traceBuffer,
-        "vibeCheck",
-      );
+      .run(systemPrompt, state.conversationHistoryWithImages, state.traceBuffer, 'vibeCheck');
 
     const latestMessage = state.conversationHistoryWithImages.at(-1);
     if (!latestMessage || !latestMessage.meta?.messageId) {
-      throw new InternalServerError(
-        "Could not find latest message ID for vibe check",
-      );
+      throw new InternalServerError('Could not find latest message ID for vibe check');
     }
     const latestMessageId = latestMessage.meta.messageId as string;
 
-    // Dynamically map categories based on headings
-    const categoryMap: { [key: string]: string } = {
-      "Fit & Silhouette": "fit_silhouette",
-      "Color Harmony": "color_harmony",
-      "Styling Details": "styling_details",
-      "Accessories & Texture": "accessories_texture",
+    // Map LLM results into DB schema (updated field names)
+    const vibeCheckData: Prisma.VibeCheckUncheckedCreateInput = {
+      userId,
+      comment: result.comment,
+      fit_silhouette_score: result.fit_silhouette.score,
+      fit_silhouette_explanation: result.fit_silhouette.explanation,
+      color_harmony_score: result.color_harmony.score,
+      color_harmony_explanation: result.color_harmony.explanation,
+      styling_details_score: result.styling_details.score,
+      styling_details_explanation: result.styling_details.explanation,
+      context_confidence_score: result.context_confidence.score,
+      context_confidence_explanation: result.context_confidence.explanation,
+      overall_score: result.overall_score,
+      recommendations: result.recommendations,
+      prompt: result.prompt,
+      follow_up: result.follow_up,
     };
-
-    const vibeCheckData: any = {
-      context_confidence: result.vibe_score,
-      overall_score: result.vibe_score,
-      comment: result.vibe_reply,
-    };
-
-    result.categories.forEach((cat) => {
-      const key = categoryMap[cat.heading];
-      if (key) {
-        vibeCheckData[key] = cat.score;
-      } else {
-        logger.warn(
-          { userId, unknownHeading: cat.heading },
-          "Unknown category heading in vibe check",
-        );
-      }
-    });
 
     const [, user] = await prisma.$transaction([
-      prisma.vibeCheck.create({
-        data: {
-          userId,
-          ...vibeCheckData,
-        },
-      }),
+      prisma.vibeCheck.create({ data: vibeCheckData }),
       prisma.user.update({
         where: { id: userId },
         data: { lastVibeCheckAt: new Date() },
       }),
     ]);
 
-    await queueWardrobeIndex(userId, latestMessageId);
-    logger.debug({ userId }, "Scheduled wardrobe indexing for message");
+    queueWardrobeIndex(userId, latestMessageId);
 
+    // Construct visually pleasing reply with emojis + formatting
     const replies: Replies = [
-      { reply_type: "text", reply_text: result.message1_text },
+      {
+        reply_type: 'text',
+        reply_text: `
+✨ *Vibe Check Results* ✨
+
+📝 *Comment*: ${result.comment}
+
+👕 *Fit & Silhouette*: ${result.fit_silhouette.score}/10  
+_${result.fit_silhouette.explanation}_
+
+🎨 *Color Harmony*: ${result.color_harmony.score}/10  
+_${result.color_harmony.explanation}_
+
+🧢 *Styling Details*: ${result.styling_details.score}/10  
+_${result.styling_details.explanation}_
+
+🎯 *Context Confidence*: ${result.context_confidence.score}/10  
+_${result.context_confidence.explanation}_
+
+⭐ *Overall Score*: *${result.overall_score.toFixed(1)}/10*
+
+💡 *Recommendations*:  
+${result.recommendations.map((rec, i) => `   ${i + 1}. ${rec}`).join('\n')}
+
+👉 ${result.follow_up}
+        `.trim(),
+      },
     ];
 
-    if (result.message2_text) {
-      replies.push({ reply_type: "text", reply_text: result.message2_text });
-    }
-
-    logger.debug(
-      { userId, vibeScore: result.vibe_score, replies },
-      "Vibe check completed successfully",
-    );
     return {
       ...state,
       user,
@@ -187,6 +155,6 @@ export async function vibeCheck(state: GraphState): Promise<GraphState> {
       pending: PendingType.NONE,
     };
   } catch (err: unknown) {
-    throw new InternalServerError("Vibe check failed", { cause: err });
+    throw new InternalServerError('Vibe check failed', { cause: err });
   }
 }
