@@ -6,58 +6,60 @@ import { prisma } from '../../lib/prisma';
 import { queueWardrobeIndex } from '../../lib/tasks';
 import { numImagesInMessage } from '../../utils/context';
 import { loadPrompt } from '../../utils/prompts';
+import type { QuickReplyButton } from '../../lib/twilio/types';
 
 import { PendingType, Prisma } from '@prisma/client';
 import { InternalServerError } from '../../utils/errors';
 import { GraphState, Replies } from '../state';
 
-/**
- * Shared scoring schema for each evaluation category
- */
 const ScoringCategorySchema = z.object({
-  score: z
-    .number()
-    .min(0)
-    .max(10)
-    .describe('Score as a fractional number between 0 and 10.'),
-  explanation: z
-    .string()
-    .describe('A short explanation for this score.'),
+  score: z.number().min(0).max(10).describe('Score as a fractional number between 0 and 10.'),
+  explanation: z.string().describe('A short explanation for this score.'),
 });
 
-/**
- * New LLM output schema for vibe check
- */
 const LLMOutputSchema = z.object({
   comment: z.string().describe("Overall comment or reason summarizing the outfit's vibe."),
   fit_silhouette: ScoringCategorySchema.describe("Assessment of fit & silhouette."),
   color_harmony: ScoringCategorySchema.describe("Assessment of color coordination."),
   styling_details: ScoringCategorySchema.describe("Assessment of accessories, layers, and details."),
   context_confidence: ScoringCategorySchema.describe("How confident the outfit fits the occasion."),
-  overall_score: z
-    .number()
-    .min(0)
-    .max(10)
-    .describe("Overall fractional score for the outfit."),
-  recommendations: z
-    .array(z.string())
-    .describe("Actionable style suggestions."),
+  overall_score: z.number().min(0).max(10).describe("Overall fractional score for the outfit."),
+  recommendations: z.array(z.string()).describe("Actionable style suggestions."),
   prompt: z.string().describe("The original input prompt or context."),
   follow_up: z.string().describe("Follow-up question or suggestion."),
 });
 
 const NoImageLLMOutputSchema = z.object({
-  reply_text: z
-    .string()
-    .describe('The text to send to the user explaining they need to send an image.'),
+  reply_text: z.string().describe('The text to send to the user explaining they need to send an image.'),
 });
+
+const tonalityButtons: QuickReplyButton[] = [
+  { text: ' Friendly', id: 'friendly' },
+  { text: ' Savage', id: 'savage' },
+  { text: ' Hype BFF', id: 'hype_bff' }
+];
+
 
 export async function vibeCheck(state: GraphState): Promise<GraphState> {
   const userId = state.user.id;
+
   try {
+    // If user hasn't chosen tonality yet, prompt for it
+    if (!state.selectedTonality) {
+      const replies: Replies = [{
+        reply_type: 'quick_reply',
+        reply_text: 'Choose a tonality for your vibe check:',
+        buttons: tonalityButtons,
+      }];
+      return {
+        ...state,
+        assistantReply: replies,
+        pending: PendingType.TONALITY_SELECTION, // Add this to your PendingType enum
+      };
+    }
+
     const imageCount = numImagesInMessage(state.conversationHistoryWithImages);
 
-    // Handle case: no image sent
     if (imageCount === 0) {
       const systemPromptText = await loadPrompt('handlers/analysis/no_image_request.txt');
       const systemPrompt = new SystemMessage(
@@ -66,7 +68,6 @@ export async function vibeCheck(state: GraphState): Promise<GraphState> {
       const response = await getTextLLM()
         .withStructuredOutput(NoImageLLMOutputSchema)
         .run(systemPrompt, state.conversationHistoryTextOnly, state.traceBuffer, 'vibeCheck');
-
       const replies: Replies = [{ reply_type: 'text', reply_text: response.reply_text }];
       return {
         ...state,
@@ -75,7 +76,7 @@ export async function vibeCheck(state: GraphState): Promise<GraphState> {
       };
     }
 
-    // Normal flow: with image
+    // With tonality and image, proceed with vibe check evaluation
     const systemPromptText = await loadPrompt('handlers/analysis/vibe_check.txt');
     const systemPrompt = new SystemMessage(systemPromptText);
 
@@ -89,7 +90,6 @@ export async function vibeCheck(state: GraphState): Promise<GraphState> {
     }
     const latestMessageId = latestMessage.meta.messageId as string;
 
-    // Map LLM results into DB schema (updated field names)
     const vibeCheckData: Prisma.VibeCheckUncheckedCreateInput = {
       userId,
       comment: result.comment,
@@ -105,6 +105,7 @@ export async function vibeCheck(state: GraphState): Promise<GraphState> {
       recommendations: result.recommendations,
       prompt: result.prompt,
       follow_up: result.follow_up,
+      tonality: state.selectedTonality, // save the selected tonality
     };
 
     const [, user] = await prisma.$transaction([
@@ -117,7 +118,6 @@ export async function vibeCheck(state: GraphState): Promise<GraphState> {
 
     queueWardrobeIndex(userId, latestMessageId);
 
-    // Construct visually pleasing reply with emojis + formatting
     const replies: Replies = [
       {
         reply_type: 'text',
@@ -126,22 +126,22 @@ export async function vibeCheck(state: GraphState): Promise<GraphState> {
 
 📝 *Comment*: ${result.comment}
 
-👕 *Fit & Silhouette*: ${result.fit_silhouette.score}/10  
+👕 *Fit & Silhouette*: ${result.fit_silhouette.score}/10  
 _${result.fit_silhouette.explanation}_
 
-🎨 *Color Harmony*: ${result.color_harmony.score}/10  
+🎨 *Color Harmony*: ${result.color_harmony.score}/10  
 _${result.color_harmony.explanation}_
 
-🧢 *Styling Details*: ${result.styling_details.score}/10  
+🧢 *Styling Details*: ${result.styling_details.score}/10  
 _${result.styling_details.explanation}_
 
-🎯 *Context Confidence*: ${result.context_confidence.score}/10  
+🎯 *Context Confidence*: ${result.context_confidence.score}/10  
 _${result.context_confidence.explanation}_
 
 ⭐ *Overall Score*: *${result.overall_score.toFixed(1)}/10*
 
-💡 *Recommendations*:  
-${result.recommendations.map((rec, i) => `   ${i + 1}. ${rec}`).join('\n')}
+💡 *Recommendations*:  
+${result.recommendations.map((rec, i) => `   ${i + 1}. ${rec}`).join('\n')}
 
 👉 ${result.follow_up}
         `.trim(),
