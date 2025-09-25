@@ -4,7 +4,11 @@ import { Request } from 'express';
 import twilio, { Twilio } from 'twilio';
 
 import RequestClient from 'twilio/lib/base/RequestClient';
+<<<<<<< HEAD
 import { TWILIO_QUICKREPLY2_SID, TWILIO_QUICKREPLY3_SID } from '../utils/constants';
+=======
+import { TWILIO_QUICKREPLY2_SID, TWILIO_QUICKREPLY3_SID, TWILIO_QUICKREPLY_TONALITY_SID } from '../utils/constants';
+>>>>>>> 18d1778 (feat: add tonalities to vibeCheck and update output format for colorAnalysis & vibeCheck)
 import {
   BadRequestError,
   InternalServerError,
@@ -111,19 +115,30 @@ export async function sendMenu(
 
   if (buttons.length < 2 || buttons.length > 3) {
     logger.warn(
-      `Invalid button count ${buttons.length}; must be 2-3 buttons. Falling back to text`,
+      `Invalid button count ${buttons.length}; must be 2-4 buttons. Falling back to text`,
     );
     await sendText(to, replyText);
     return;
   }
 
+<<<<<<< HEAD
   const contentSid = buttons.length === 2 ? TWILIO_QUICKREPLY2_SID : TWILIO_QUICKREPLY3_SID;
+=======
+  const contentSid =
+  buttons.length === 2 ? TWILIO_QUICKREPLY2_SID
+  : buttons.length === 3 ? TWILIO_QUICKREPLY3_SID
+  : TWILIO_QUICKREPLY_TONALITY_SID;
+>>>>>>> 18d1778 (feat: add tonalities to vibeCheck and update output format for colorAnalysis & vibeCheck)
   const fromNumber = process.env.TWILIO_WHATSAPP_FROM || 'whatsapp:+14155238886';
 
   const [firstButton, secondButton, thirdButton] = buttons as [
     QuickReplyButton,
     QuickReplyButton,
     QuickReplyButton?,
+<<<<<<< HEAD
+=======
+    QuickReplyButton?,
+>>>>>>> 18d1778 (feat: add tonalities to vibeCheck and update output format for colorAnalysis & vibeCheck)
   ];
 
   const contentVariables: Record<string, string> = {
@@ -138,7 +153,7 @@ export async function sendMenu(
     contentVariables['6'] = thirdButton.text;
     contentVariables['7'] = thirdButton.id;
   }
-
+  
   try {
     const payload: TwilioMessageOptions = {
       contentSid,

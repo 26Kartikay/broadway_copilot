@@ -54,6 +54,9 @@ export interface GraphState {
 
   /** The pending action type, if the agent is waiting for user input */
   pending: PendingType | null;
+
+  /** User's selected tonality for vibe check */
+  selectedTonality: string | null;
 }
 
 // ============================================================================
@@ -120,3 +123,7 @@ export type Replies = Reply[];
  * Used to determine if the user needs to provide more information to fulfill the request.
  */
 export type MissingProfileField = 'gender' | 'age_group';
+<<<<<<< HEAD
+=======
+
+>>>>>>> 18d1778 (feat: add tonalities to vibeCheck and update output format for colorAnalysis & vibeCheck)

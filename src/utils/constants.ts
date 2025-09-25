@@ -6,9 +6,15 @@
  * Twilio constants
  */
 export const TWILIO_WHATSAPP_FROM = 'whatsapp:+14155238886';
+<<<<<<< HEAD
 export const TWILIO_QUICKREPLY2_SID = 'HXd3617403bdef70f5979d498fcfb82165';
 export const TWILIO_QUICKREPLY3_SID = 'HX60e62906ce18d4b64ac6d214fac74d8a';
 
+=======
+export const TWILIO_QUICKREPLY2_SID = 'HXd3617403bdef70f5979d498fcfb82165'; // 2-button template
+export const TWILIO_QUICKREPLY3_SID = 'HX60e62906ce18d4b64ac6d214fac74d8a'; // 3-button template
+export const TWILIO_QUICKREPLY_TONALITY_SID = 'HXd7aa41ffaa09960279627d5cb4566c0b'; // 3-button template
+>>>>>>> 18d1778 (feat: add tonalities to vibeCheck and update output format for colorAnalysis & vibeCheck)
 /**
  * Media links
  */

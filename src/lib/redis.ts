@@ -14,12 +14,21 @@ const globalForRedis = global as unknown as {
  * Redis client instance configured with connection URL from environment.
  * Singleton pattern prevents multiple connections during hot reloading in development.
  */
+<<<<<<< HEAD
 export const redis =
   globalForRedis.redis ||
   createClient({
     url: process.env.REDIS_URL || 'redis://localhost:6379',
   });
 
+=======
+
+export const redis =
+  globalForRedis.redis ||
+  createClient({
+    url: process.env.REDIS_URL || 'redis://localhost:6379',
+  });
+>>>>>>> 18d1778 (feat: add tonalities to vibeCheck and update output format for colorAnalysis & vibeCheck)
 redis.on('error', (err) => logger.error({ err: err.message }, 'Redis client error'));
 redis.on('connect', () => logger.info('Redis client connected'));
 redis.on('disconnect', () => logger.warn('Redis client disconnected'));
