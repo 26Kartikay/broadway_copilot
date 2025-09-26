@@ -54,12 +54,23 @@ export async function routeIntent(state: GraphState): Promise<GraphState> {
       intent = 'styling';
     } else if (otherValid.includes(buttonPayload)) {
       intent = buttonPayload as IntentLabel;
+      if (intent === 'vibe_check') {
+        // Force fresh tonality selection!
+        return {
+          ...state,
+          intent: 'vibe_check',
+          pending: PendingType.TONALITY_SELECTION,   // Prompt for tonality
+          selectedTonality: null,                    // Reset previous tonality
+          missingProfileField: null,
+        };
+      }
+    
     } else if (validTonalities.includes(buttonPayload)) {
       return {
         ...state,
         intent: 'vibe_check',
         selectedTonality: buttonPayload,
-        pending: null,
+        pending: PendingType.VIBE_CHECK_IMAGE,
         missingProfileField: null,
       };
     }
