@@ -7,9 +7,10 @@
  */
 
 export const TWILIO_WHATSAPP_FROM = 'whatsapp:+14155238886';
-export const TWILIO_QUICKREPLY2_SID = 'HXd3617403bdef70f5979d498fcfb82165'; // 2-button template
-export const TWILIO_QUICKREPLY3_SID = 'HX60e62906ce18d4b64ac6d214fac74d8a'; // 3-button template
-export const TWILIO_QUICKREPLY_TONALITY_SID = 'HXd7aa41ffaa09960279627d5cb4566c0b'; // 3-button template
+export const TWILIO_QUICKREPLY2_SID = 'HX76104ef8e7b6743389eb3ef7edef4f36';
+export const TWILIO_QUICKREPLY3_SID = 'HX54d74d5ea0d71ad29351f05cb8de14bc';
+export const TWILIO_QUICKREPLY_TONALITY_SID = 'HX9864fb492f9827872519cb85aefaf71b';
+export const TWILIO_QUICKREPLY_STYLING_SID = 'HX3bd8d81373a591ca587daa2b48c89165';
 /**
  * Media links
  */
