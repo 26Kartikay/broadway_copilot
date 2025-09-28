@@ -36,6 +36,7 @@ enum PendingType {
   COLOR_ANALYSIS_IMAGE
   ASK_USER_INFO
   FEEDBACK
+  TONALITY_SELECTION
 }
 
 enum TaskType {
@@ -129,6 +130,7 @@ model Message {
   intent        String?
   buttonPayload String?
   pending       PendingType? @default(NONE)
+  selectedTonality String?     
 
   content          Json[] @default([])
   additionalKwargs Json?
@@ -144,6 +146,7 @@ model Message {
   @@index([role, createdAt])
   @@index([buttonPayload])
 }
+
 
 // --- MEDIA ---
 
@@ -180,37 +183,43 @@ model Memory {
 
   @@index([userId, createdAt])
 }
-
 model VibeCheck {
-  id     String @id @default(cuid())
-  userId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                         Int      @id @default(autoincrement())
+  userId                     String
+  user                       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  comment                    String
+  fit_silhouette_score       Float
+  fit_silhouette_explanation String
+  color_harmony_score        Float
+  color_harmony_explanation  String
+  styling_details_score      Float
+  styling_details_explanation String
+  context_confidence_score   Float
+  context_confidence_explanation String
+  overall_score              Float
+  recommendations            String[]
+  prompt                     String
+  follow_up                  String
+  tonality                   String?
 
-  fit_silhouette      Float?
-  color_harmony       Float?
-  styling_details     Float?
-  accessories_texture Float?
-  context_confidence  Float?
-  overall_score       Float?
-  comment             String?
-
-  createdAt DateTime @default(now())
-
-  @@index([userId, createdAt])
+  @@map("vibe_check")
 }
+
 
 model ColorAnalysis {
   id     String @id @default(cuid())
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  skin_tone     String?
-  eye_color     String?
-  hair_color    String?
-  undertone     String?
-  palette_name  String?
-  top3_colors   Json?
-  avoid3_colors Json?
+  compliment          String
+  palette_name        String?
+  palette_description String?
+
+  colors_suited   Json?   // Array of color objects {name, hex}
+  colors_to_wear  Json?   // Object { clothing: [], jewelry: [] }
+  colors_to_avoid Json?   // Array of color objects {name, hex}
+  top3_colors     Json?   // Optional: store top 3 colors separately
 
   createdAt DateTime @default(now())
 

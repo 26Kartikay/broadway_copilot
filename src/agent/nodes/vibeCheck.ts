@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { logger } from '../../utils/logger';
 
 import { getTextLLM, getVisionLLM } from '../../lib/ai';
 import { SystemMessage } from '../../lib/ai/core/messages';
@@ -42,6 +43,13 @@ const tonalityButtons: QuickReplyButton[] = [
 
 
 export async function vibeCheck(state: GraphState): Promise<GraphState> {
+  logger.debug({
+    userId: state.user.id,
+    pending: state.pending,
+    selectedTonality: state.selectedTonality,
+    intent: state.intent,
+  }, 'Entering vibeCheck node with state');
+
   const userId = state.user.id;
 
   try {
