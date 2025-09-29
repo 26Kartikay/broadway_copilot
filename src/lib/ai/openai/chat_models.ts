@@ -1,0 +1,352 @@
+import { createId } from '@paralleldrive/cuid2';
+import OpenAI from 'openai';
+import type {
+  FunctionTool,
+  Response,
+  ResponseCreateParamsNonStreaming,
+  ResponseFunctionToolCall,
+  ResponseInputItem,
+  ResponseOutputItem,
+} from 'openai/resources/responses/responses';
+import z from 'zod';
+
+import { Prisma } from '@prisma/client';
+import { BufferedLlmTrace, TraceBuffer } from '../../../agent/tracing';
+import { MODEL_COSTS } from '../config/costs';
+import { BaseChatCompletionsModel } from '../core/base_chat_completions_model';
+import { AssistantMessage, BaseMessage, SystemMessage, TextPart } from '../core/messages';
+import { OpenAIChatModelParams, RunOutcome } from '../core/runnables';
+import { ToolCall, toOpenAIToolSpec } from '../core/tools';
+
+/**
+ * A chat model that interacts with the OpenAI API.
+ * This class extends `BaseChatCompletionsModel` and is configured for the OpenAI endpoint.
+ *
+ * @example
+ * ```typescript
+ * const model = new ChatOpenAI({ model: 'gpt-4o-mini' });
+ * const result = await model.run(
+ *   new SystemMessage('You are a helpful assistant.'),
+ *   [new UserMessage('What is the capital of France?')],
+ *   'some-graph-run-id'
+ * );
+ * console.log(result.assistant.content[0].text);
+ * ```
+ */
+export class ChatOpenAI extends BaseChatCompletionsModel {
+  protected client: OpenAI;
+  public params: OpenAIChatModelParams;
+
+  /**
+   * Creates an instance of ChatOpenAI.
+   * @param params - Optional parameters to override the model defaults.
+   * @param client - An optional OpenAI client instance, useful for testing or custom configurations.
+   */
+  constructor(params: Partial<OpenAIChatModelParams> = {}) {
+    const combinedParams: OpenAIChatModelParams = {
+      model: 'gpt-4.1',
+      useResponsesApi: false,
+      ...params,
+    };
+    super(combinedParams);
+    this.client = new OpenAI();
+    this.params = combinedParams;
+  }
+
+  async run(
+    systemPrompt: SystemMessage,
+    msgs: BaseMessage[],
+    traceBuffer: TraceBuffer,
+    nodeName: string,
+  ): Promise<RunOutcome> {
+    if (this.params.useResponsesApi) {
+      return this._runResponses(systemPrompt, msgs, traceBuffer, nodeName);
+    }
+    return this._runChatCompletions(systemPrompt, msgs, traceBuffer, nodeName);
+  }
+
+  private async _runResponses(
+    systemPrompt: SystemMessage,
+    msgs: BaseMessage[],
+    traceBuffer: TraceBuffer,
+    nodeName: string,
+  ): Promise<RunOutcome> {
+    const params = this._buildResponsesParams(systemPrompt, msgs);
+
+    const nodeRun = traceBuffer.nodeRuns.find((ne) => ne.nodeName === nodeName && !ne.endTime);
+    if (!nodeRun) {
+      throw new Error(`Could not find an active node execution for nodeName: ${nodeName}`);
+    }
+
+    const startTime = new Date();
+
+    const llmTrace: BufferedLlmTrace = {
+      id: createId(),
+      nodeRunId: nodeRun.id,
+      model: this.params.model,
+      inputMessages: params.input as unknown as Prisma.JsonArray,
+      rawRequest: params as unknown as Prisma.JsonObject,
+      startTime,
+    };
+
+    let response: Response;
+    try {
+      response = await this.client.responses.create(params);
+    } catch (err) {
+      const endTime = new Date();
+      const message = err instanceof Error ? err.message : String(err);
+      const stack = err instanceof Error ? err.stack : undefined;
+      llmTrace.errorTrace = stack ?? message;
+      llmTrace.endTime = endTime;
+      llmTrace.durationMs = endTime.getTime() - startTime.getTime();
+      traceBuffer.llmTraces.push(llmTrace);
+      throw err;
+    }
+
+    const { assistantContent, toolCalls, rawToolCalls } = this._processResponsesResponse(response);
+
+    const assistant = new AssistantMessage(assistantContent);
+    assistant.meta = { raw: response };
+    if (toolCalls.length > 0) {
+      assistant.meta.tool_calls = toolCalls;
+    }
+    if (rawToolCalls.length > 0) {
+      assistant.meta.raw_tool_calls = rawToolCalls;
+    }
+
+    const endTime = new Date();
+    llmTrace.rawResponse = response as unknown as Prisma.JsonObject;
+    llmTrace.outputMessage = assistant.toJSON() as Prisma.JsonObject;
+    llmTrace.promptTokens = response.usage?.total_tokens ?? null;
+    llmTrace.completionTokens = 0;
+    llmTrace.totalTokens = response.usage?.total_tokens ?? null;
+    llmTrace.endTime = endTime;
+    llmTrace.durationMs = endTime.getTime() - startTime.getTime();
+    traceBuffer.llmTraces.push(llmTrace);
+
+    return {
+      assistant,
+      toolCalls,
+      raw: response,
+    };
+  }
+
+  private async _runChatCompletions(
+    systemPrompt: SystemMessage,
+    msgs: BaseMessage[],
+    traceBuffer: TraceBuffer,
+    nodeName: string,
+  ): Promise<RunOutcome> {
+    const params = this._buildChatCompletionsParams(systemPrompt, msgs);
+
+    const nodeRun = traceBuffer.nodeRuns.find((ne) => ne.nodeName === nodeName && !ne.endTime);
+    if (!nodeRun) {
+      throw new Error(`Could not find an active node execution for nodeName: ${nodeName}`);
+    }
+
+    const startTime = new Date();
+
+    const llmTrace: BufferedLlmTrace = {
+      id: createId(),
+      nodeRunId: nodeRun.id,
+      model: this.params.model,
+      inputMessages: params.messages as unknown as Prisma.JsonArray,
+      rawRequest: params as unknown as Prisma.JsonObject,
+      startTime,
+    };
+
+    let response: OpenAI.Chat.Completions.ChatCompletion;
+    try {
+      response = await this.client.chat.completions.create(params);
+    } catch (err) {
+      const endTime = new Date();
+      const message = err instanceof Error ? err.message : String(err);
+      const stack = err instanceof Error ? err.stack : undefined;
+      llmTrace.errorTrace = stack ?? message;
+      llmTrace.endTime = endTime;
+      llmTrace.durationMs = endTime.getTime() - startTime.getTime();
+      traceBuffer.llmTraces.push(llmTrace);
+      throw err;
+    }
+
+    const { assistant, toolCalls } = this._processChatCompletionsResponse(response);
+
+    const endTime = new Date();
+
+    let costUsd: number | null = null;
+    const modelCosts = MODEL_COSTS[this.params.model];
+    if (modelCosts) {
+      const promptTokens = response.usage?.prompt_tokens ?? 0;
+      const completionTokens = response.usage?.completion_tokens ?? 0;
+      const inputCost = (promptTokens / 1_000_000) * modelCosts.input;
+      const outputCost = (completionTokens / 1_000_000) * modelCosts.output;
+      costUsd = inputCost + outputCost;
+    }
+
+    llmTrace.rawResponse = response as unknown as Prisma.JsonObject;
+    llmTrace.outputMessage = assistant.toJSON() as Prisma.JsonObject;
+    llmTrace.promptTokens = response.usage?.prompt_tokens ?? null;
+    llmTrace.completionTokens = response.usage?.completion_tokens ?? null;
+    llmTrace.totalTokens = response.usage?.total_tokens ?? null;
+    llmTrace.costUsd = costUsd ?? null;
+    llmTrace.endTime = endTime;
+    llmTrace.durationMs = endTime.getTime() - startTime.getTime();
+    traceBuffer.llmTraces.push(llmTrace);
+
+    return {
+      assistant,
+      toolCalls,
+      raw: response,
+    };
+  }
+
+  protected _buildResponsesParams(
+    systemPrompt: SystemMessage,
+    msgs: BaseMessage[],
+  ): ResponseCreateParamsNonStreaming {
+    const instructions = systemPrompt.content
+      .filter((p): p is TextPart => p.type === 'text')
+      .map((p) => p.text)
+      .join('');
+
+    const input: ResponseInputItem[] = msgs.flatMap((m) => {
+      if (m.role === 'tool') {
+        return {
+          type: 'function_call_output',
+          call_id: m.tool_call_id!,
+          output: m.content
+            .filter((p): p is TextPart => p.type === 'text')
+            .map((p) => p.text)
+            .join(''),
+        };
+      }
+
+      if (m.role === 'assistant') {
+        const items: ResponseInputItem[] = [];
+        const textContent = m.content
+          .filter((p): p is TextPart => p.type === 'text')
+          .map((p) => p.text)
+          .join('')
+          .trim();
+
+        if (textContent) {
+          items.push({
+            role: 'assistant',
+            content: textContent,
+          });
+        }
+
+        const rawToolCalls = m.meta?.raw_tool_calls as ResponseFunctionToolCall[] | undefined;
+        if (rawToolCalls?.length) {
+          items.push(...rawToolCalls);
+        }
+        return items;
+      }
+
+      // User messages
+      return {
+        role: 'user',
+        content: m.content.map((c) => {
+          if (c.type === 'text') {
+            return { type: 'input_text' as const, text: c.text };
+          }
+          // ImagePart
+          return {
+            type: 'input_image' as const,
+            image_url: c.image_url.url,
+            detail: c.image_url.detail ?? 'auto',
+          };
+        }),
+      };
+    });
+
+    const tools = this.boundTools.map(toOpenAIToolSpec);
+
+    const params: ResponseCreateParamsNonStreaming = {
+      model: this.params.model,
+      input,
+      stream: false,
+    };
+
+    if (this.params.temperature !== undefined) {
+      params.temperature = this.params.temperature;
+    }
+    if (this.params.maxTokens !== undefined) {
+      params.max_output_tokens = this.params.maxTokens;
+    }
+    if (this.params.topP !== undefined) {
+      params.top_p = this.params.topP;
+    }
+    if (instructions) {
+      params.instructions = instructions;
+    }
+    if (this.params.reasoning) {
+      params.reasoning = this.params.reasoning;
+    }
+
+    if (tools.length > 0) {
+      params.tools = tools;
+      params.tool_choice = 'auto';
+    }
+
+    if (this.structuredOutputSchema) {
+      const toolName = this.structuredOutputToolName;
+      const tool: FunctionTool = {
+        type: 'function',
+        name: toolName,
+        description: 'Structured output formatter',
+        parameters: z.toJSONSchema(this.structuredOutputSchema) as Record<string, unknown>,
+        strict: true,
+      };
+      params.tools = [...(params.tools ?? []), tool];
+      params.tool_choice = {
+        type: 'function',
+        name: toolName,
+      };
+    }
+
+    return params;
+  }
+
+  protected _buildChatCompletionsParams(
+    systemPrompt: SystemMessage,
+    msgs: BaseMessage[],
+  ): OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming {
+    const params = super._buildChatCompletionsParams(systemPrompt, msgs);
+    if (this.params.responseFormat) {
+      params.response_format = this.params.responseFormat;
+    }
+    return params;
+  }
+
+  protected _processResponsesResponse(response: Response): {
+    assistantContent: string;
+    toolCalls: ToolCall[];
+    rawToolCalls: ResponseFunctionToolCall[];
+  } {
+    const assistantContent = response.output_text ?? '';
+    const output: ResponseOutputItem[] = response.output ?? [];
+
+    const rawToolCalls = output.filter(
+      (item): item is ResponseFunctionToolCall => item?.type === 'function_call',
+    );
+
+    const toolCalls = rawToolCalls.map((item) => {
+      try {
+        return {
+          id: item.call_id,
+          name: item.name,
+          arguments: item.arguments ? JSON.parse(item.arguments) : {},
+        };
+      } catch (e) {
+        throw new Error(`Failed to parse arguments for ${item.name}: ${e}`);
+      }
+    });
+
+    return {
+      assistantContent,
+      toolCalls,
+      rawToolCalls,
+    };
+  }
+}

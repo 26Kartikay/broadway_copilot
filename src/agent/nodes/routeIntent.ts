@@ -1,87 +1,188 @@
-import { getNanoLLM } from '../../services/openaiService';
-import { IntentLabel, RunInput } from '../state';
-import { loadPrompt } from '../../utils/prompts';
 import { z } from 'zod';
-import { getLogger } from '../../utils/logger';
+
+import { PendingType } from '@prisma/client';
+
+import { getTextLLM } from '../../lib/ai';
+import { SystemMessage } from '../../lib/ai/core/messages';
+import { numImagesInMessage } from '../../utils/context';
+import { InternalServerError } from '../../utils/errors';
+import { logger } from '../../utils/logger';
+import { loadPrompt } from '../../utils/prompts';
+import { GraphState, IntentLabel } from '../state';
 
 /**
- * Routes the input to the appropriate handler node based on the router prompt.
+ * Schema for LLM output defining the routing decision.
+ * Determines the primary intent and any missing profile requirements.
  */
-const logger = getLogger('node:route_intent');
+const LLMOutputSchema = z.object({
+  intent: z
+    .enum(['general', 'vibe_check', 'color_analysis', 'styling'])
+    .describe(
+      "The primary intent of the user's message, used to route to the appropriate handler.",
+    ),
+  missingProfileField: z
+    .enum(['gender', 'age_group'])
+    .nullable()
+    .describe(
+      "The profile field that is missing and required to fulfill the user's intent. Null if no field is missing.",
+    ),
+});
 
-type RouterOutput = { intent: IntentLabel; gender_required: boolean };
+const validTonalities = ['friendly', 'savage', 'hype_bff'];
 
-export async function routeIntent(state: { input: RunInput; messages?: unknown[] }): Promise<{ intent: IntentLabel; missingProfileFields: Array<'gender'>; next: string }>{
-  const input = state.input;
-  const payload = (input.buttonPayload || '').toLowerCase();
-  if (payload === 'vibe_check' || payload === 'color_analysis') {
-    const intent = payload as IntentLabel;
-    const missingProfileFields: Array<'gender'> = [];
-    const next = 'check_image';
-    logger.info({ input, intent, next }, 'RouteIntent: skip LLM due to button payload');
-    return { intent, missingProfileFields, next };
-  }
+/**
+ * Routes the user's message to the appropriate handler based on intent analysis.
+ * Uses a hierarchical routing strategy: button payloads → pending intents → LLM analysis.
+ *
+ * @param state - The current state of the agent graph containing user data and conversation history
+ * @returns The determined intent and any new missing profile field that needs to be collected
+ */
+export async function routeIntent(state: GraphState): Promise<GraphState> {
+  logger.debug({
+    buttonPayload: state.input.ButtonPayload,
+    pending: state.pending,
+    selectedTonality: state.selectedTonality,
+    userId: state.user.id,
+  }, 'Routing intent with current state');
 
+  const { user, input, conversationHistoryWithImages, pending } = state;
+  const userId = user.id;
+  const buttonPayload = input.ButtonPayload;
 
-  const hasImage = Boolean(input.fileId || input.imagePath);
-  let prevUserButton: string | undefined = undefined;
-  try {
-    const msgs = Array.isArray(state.messages) ? (state.messages as Array<any>) : [];
-    const lastIdx = msgs.length - 1;
-    const currentIsUser = lastIdx >= 0 && msgs[lastIdx]?.role === 'user';
-    if (currentIsUser) {
-      for (let i = lastIdx - 1; i >= 0; i--) {
-        const m = msgs[i];
-        if (m?.role === 'user') {
-          prevUserButton = (m?.metadata?.buttonPayload || '').toString().toLowerCase();
-          break;
-        }
+  // Priority 1: Handle explicit button payload routing
+  if (buttonPayload) {
+    const stylingRelated: string[] = ['styling', 'occasion', 'vacation', 'pairing'];
+    const otherValid: string[] = ['general', 'vibe_check', 'color_analysis', 'suggest'];
+    const validTonalities: string[] = ['friendly', 'savage', 'hype_bff'];
+
+    let intent: IntentLabel = 'general';
+
+    if (stylingRelated.includes(buttonPayload)) {
+      intent = 'styling';
+    } else if (otherValid.includes(buttonPayload)) {
+      intent = buttonPayload as IntentLabel;
+      if (intent === 'vibe_check') {
+        logger.debug({
+          selectedTonality: state.selectedTonality,
+          pending: state.pending,
+          buttonPayload,
+        }, 'Received vibe_check buttonPayload - resetting selectedTonality and pending');
+        // Force fresh tonality selection!
+        return {
+          ...state,
+          intent: 'vibe_check',
+          pending: PendingType.TONALITY_SELECTION,   // Prompt for tonality
+          selectedTonality: null,                    // Reset previous tonality
+          missingProfileField: null,
+        };
+      }
+    } else if (validTonalities.includes(buttonPayload)) {
+      return {
+        ...state,
+        intent: 'vibe_check',
+        selectedTonality: buttonPayload,
+        pending: PendingType.VIBE_CHECK_IMAGE,
+        missingProfileField: null,
+      };
+    }
+
+    // Return early here so that LLM routing is skipped when buttonPayload is handled
+    return { ...state, intent, missingProfileField: null };
+  } else {
+    // Priority 2: Handle pending tonality selection
+    if (pending === PendingType.TONALITY_SELECTION) {
+      const userMessage = input.Body?.toLowerCase().trim() ?? '';
+
+      if (validTonalities.includes(userMessage)) {
+        // User selected a valid tonality, update state and move to image upload pending
+        return {
+          ...state,
+          selectedTonality: userMessage,
+          pending: PendingType.VIBE_CHECK_IMAGE,
+          intent: 'vibe_check',
+          missingProfileField: null,
+        };
+      } else {
+        // User input invalid tonality - prompt again or fallback
+        return {
+          ...state,
+          assistantReply: [
+            {
+              reply_type: 'text',
+              reply_text: `Invalid tonality selection. Please choose one of: Friendly, Savage, Hype BFF`,
+            },
+          ],
+          pending: PendingType.TONALITY_SELECTION,
+        };
       }
     }
-  } catch {}
-  if (hasImage && (prevUserButton === 'vibe_check' || prevUserButton === 'color_analysis')) {
-    const intent = prevUserButton as IntentLabel;
-    const missingProfileFields: Array<'gender'> = [];
-    const next = intent;
-    logger.info({ intent, next }, 'RouteIntent: image present and previous user button');
-    return { intent, missingProfileFields, next };
+
+    // Priority 3: Handle pending image-based intents
+    const imageCount = numImagesInMessage(conversationHistoryWithImages);
+    if (imageCount > 0) {
+      if (pending === PendingType.VIBE_CHECK_IMAGE) {
+        logger.debug({ userId }, 'Routing to vibe_check due to pending intent and image presence');
+        return { ...state, intent: 'vibe_check', missingProfileField: null };
+      } else if (pending === PendingType.COLOR_ANALYSIS_IMAGE) {
+        logger.debug(
+          { userId },
+          'Routing to color_analysis due to pending intent and image presence',
+        );
+        return { ...state, intent: 'color_analysis', missingProfileField: null };
+      }
+    }
+
+    // Calculate cooldown periods for premium services (30-min cooldown)
+    const now = Date.now();
+    const lastVibeCheckAt = user.lastVibeCheckAt?.getTime() ?? null;
+    const vibeMinutesAgo = lastVibeCheckAt ? Math.floor((now - lastVibeCheckAt) / (1000 * 60)) : -1;
+    const canDoVibeCheck = vibeMinutesAgo === -1 || vibeMinutesAgo >= 30;
+
+    const lastColorAnalysisAt = user.lastColorAnalysisAt?.getTime() ?? null;
+    const colorMinutesAgo = lastColorAnalysisAt
+      ? Math.floor((now - lastColorAnalysisAt) / (1000 * 60))
+      : -1;
+    const canDoColorAnalysis = colorMinutesAgo === -1 || colorMinutesAgo >= 30;
+
+    // Priority 4: Use LLM for intelligent intent classification
+    try {
+      const systemPromptText = await loadPrompt('routing/route_intent.txt');
+      const formattedSystemPrompt = systemPromptText
+        .replace('{can_do_vibe_check}', canDoVibeCheck.toString())
+        .replace('{can_do_color_analysis}', canDoColorAnalysis.toString());
+    
+      const systemPrompt = new SystemMessage(formattedSystemPrompt);
+    
+      const response = await getTextLLM()
+        .withStructuredOutput(LLMOutputSchema)
+        .run(systemPrompt, state.conversationHistoryTextOnly, state.traceBuffer, 'routeIntent');
+    
+      let { intent, missingProfileField } = response;
+    
+      if (missingProfileField) {
+        logger.debug({ userId, missingProfileField }, 'Checking if missingProfileField can be cleared based on user profile');
+    
+        if (missingProfileField === 'gender' && (user.inferredGender || user.confirmedGender)) {
+          logger.debug({ userId }, 'Clearing missingProfileField gender because user already has it.');
+          missingProfileField = null;
+        } else if (
+          missingProfileField === 'age_group' &&
+          (user.inferredAgeGroup || user.confirmedAgeGroup)
+        ) {
+          logger.debug({ userId }, 'Clearing missingProfileField age_group because user already has it.');
+          missingProfileField = null;
+        }
+      }
+    
+      // Set generalIntent for the tonality menu when vibe_check intent and TONALITY_SELECTION pending
+      if (intent === 'vibe_check' && state.pending === PendingType.TONALITY_SELECTION) {
+        state.generalIntent = 'tonality';
+        logger.debug({ userId, intent, pending: state.pending, generalIntent: state.generalIntent }, 'Set generalIntent to tonality for vibe_check with TONALITY_SELECTION');
+      }
+    
+      return { ...state, intent, missingProfileField, generalIntent: state.generalIntent };
+    } catch (err: unknown) {
+      throw new InternalServerError('Failed to route intent', { cause: err });
+    }
   }
-
-  const systemPrompt = await loadPrompt('route_intent.txt');
-
-  const RouterSchema = z.object({
-    intent: z.enum(['general', 'occasion', 'vacation', 'pairing', 'suggest', 'vibe_check', 'color_analysis']),
-    gender_required: z.boolean(),
-  });
-
-  const content: Array<{ role: 'system' | 'user'; content: string }> = [
-    { role: 'system', content: systemPrompt },
-    { role: 'system', content: `InputState: ${JSON.stringify({ input })}` },
-    { role: 'system', content: `ConversationContext: ${JSON.stringify(state.messages || [])}` },
-  ];
-
-  logger.info({ input }, 'RouteIntent: input');
-  const res = await getNanoLLM().withStructuredOutput(RouterSchema as any).invoke(content as any) as RouterOutput;
-  logger.info(res, 'RouteIntent: output');
-
-  const { intent, gender_required } = res;
-  const hasGender = input.gender === 'male' || input.gender === 'female';
-  const missingProfileFields = gender_required && !hasGender ? (['gender'] as Array<'gender'>) : [];
-
-  let next = 'handle_general';
-  if (missingProfileFields.length > 0) {
-    next = 'ask_user_info';
-  } else if (intent === 'occasion') {
-    next = 'handle_occasion';
-  } else if (intent === 'vacation') {
-    next = 'handle_vacation';
-  } else if (intent === 'pairing') {
-    next = 'handle_pairing';
-  } else if (intent === 'suggest') {
-    next = 'handle_suggest';
-  } else if (intent === 'vibe_check' || intent === 'color_analysis') {
-    next = 'check_image';
-  }
-
-  return { intent, missingProfileFields, next };
 }

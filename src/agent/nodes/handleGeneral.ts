@@ -1,43 +1,97 @@
-import { RunInput } from '../state';
-import { loadPrompt } from '../../utils/prompts';
 import { z } from 'zod';
-import { getNanoLLM } from '../../services/openaiService';
-import { queryActivityTimestamps } from '../tools';
-import { getLogger } from '../../utils/logger';
+import { GraphState, Replies } from '../state';
+import { InternalServerError } from '../../utils/errors';
+import { logger } from '../../utils/logger';
+import { WELCOME_IMAGE_URL } from '../../utils/constants';
+import { fetchRelevantMemories } from '../tools';
+import { loadPrompt } from '../../utils/prompts';
+import { SystemMessage } from '../../lib/ai/core/messages';
+import { getTextLLM } from '../../lib/ai';
+import { agentExecutor } from '../../lib/ai/agents/executor';
 
-/**
- * Handles general chat; may return text, menu, or card per prompt schema.
- */
-const logger = getLogger('node:handle_general');
+// Define the output schema for chat responses locally
+const LLMOutputSchema = z.object({
+  message1_text: z.string().describe('The first text message response to the user.'),
+  message2_text: z.string().nullable().describe('The second text message response to the user.'),
+});
 
-export async function handleGeneralNode(state: { input: RunInput; intent?: string; messages?: unknown[]; wardrobe?: unknown; latestColorAnalysis?: unknown }): Promise<{ replies: Array<{ reply_type: 'text' | 'menu' | 'card'; reply_text: string }> }>{
-  const { input } = state;
-  const intent: string | undefined = state.intent;
-  const systemPrompt = await loadPrompt('handle_general.txt');
-  const activity = await queryActivityTimestamps(input.userId);
-  const prompt: Array<{ role: 'system' | 'user'; content: string }> = [
-    { role: 'system', content: systemPrompt },
-    { role: 'system', content: `UserGender: ${input.gender ?? 'unknown'} (if known, tailor guidance and examples accordingly).` },
-    { role: 'system', content: `Current user ID: ${input.userId}` },
-    { role: 'system', content: `Intent: ${intent || 'general'}` },
-    { role: 'system', content: `ConversationContext: ${JSON.stringify(state.messages || [])}` },
-    { role: 'system', content: `WardrobeContext: ${JSON.stringify(state.wardrobe || {})}` },
-    { role: 'system', content: `LatestColorAnalysis: ${JSON.stringify(state.latestColorAnalysis || null)}` },
-    { role: 'system', content: `LastColorAnalysisAtISO: ${activity.lastColorAnalysisAt ? activity.lastColorAnalysisAt.toISOString() : 'none'}` },
-    { role: 'system', content: `LastColorAnalysisHoursAgo: ${activity.colorAnalysisHoursAgo ?? 'unknown'}` },
-    { role: 'system', content: `LastVibeCheckAtISO: ${activity.lastVibeCheckAt ? activity.lastVibeCheckAt.toISOString() : 'none'}` },
-    { role: 'system', content: `LastVibeCheckHoursAgo: ${activity.vibeCheckHoursAgo ?? 'unknown'}` },
-    { role: 'user', content: input.text || 'Help with style.' },
-  ];
-  const Schema = z.object({ reply_type: z.enum(['text','menu','card']), reply_text: z.string(), followup_text: z.string().nullable() });
-  logger.info({ userText: input.text || '' }, 'HandleGeneral: input');
-  const resp = await getNanoLLM().withStructuredOutput(Schema as any).invoke(prompt as any) as { reply_type: 'text'|'menu'|'card'; reply_text: string; followup_text: string | null };
-  logger.info(resp, 'HandleGeneral: output');
-  const replies: Array<{ reply_type: 'text' | 'menu' | 'card'; reply_text: string }> = [
-    { reply_type: resp.reply_type, reply_text: resp.reply_text },
-  ];
-  if (resp.followup_text) {
-    replies.push({ reply_type: 'text', reply_text: resp.followup_text });
+export async function handleGeneral(state: GraphState): Promise<GraphState> {
+  const { user, generalIntent, input, conversationHistoryTextOnly, traceBuffer } = state;
+  const userId = user.id;
+  const messageId = input.MessageSid;
+
+  try {
+    if (generalIntent === 'greeting') {
+      const greetingText = `Welcome, ${user.profileName}! How can we assist you today?`;
+      const buttons = [
+        { text: 'Vibe check', id: 'vibe_check' },
+        { text: 'Color analysis', id: 'color_analysis' },
+        { text: 'Styling', id: 'styling' },
+      ];
+      const replies: Replies = [
+        { reply_type: 'image', media_url: WELCOME_IMAGE_URL },
+        { reply_type: 'quick_reply', reply_text: greetingText, buttons },
+      ];
+      logger.debug({ userId, messageId }, 'Greeting handled with static response');
+      return { ...state, assistantReply: replies };
+    }
+
+    if (generalIntent === 'menu') {
+      const menuText = 'Please choose one of the following options:';
+      const buttons = [
+        { text: 'Vibe check', id: 'vibe_check' },
+        { text: 'Color analysis', id: 'color_analysis' },
+        { text: 'Styling', id: 'styling' },
+      ];
+      const replies: Replies = [
+        { reply_type: 'quick_reply', reply_text: menuText, buttons },
+      ];
+      logger.debug({ userId, messageId }, 'Menu handled with static response');
+      return { ...state, assistantReply: replies };
+    }
+
+    if (generalIntent === 'tonality') {
+      const tonalityText = 'Choose your vibe! ✨💬';
+      const buttons = [
+        { text: 'Hype BFF 🔥', id: 'hype_bff' },
+        { text: 'Friendly 🙂', id: 'friendly' },
+        { text: 'Savage 😈', id: 'savage' },
+      ];
+      const replies: Replies = [
+        { reply_type: 'quick_reply', reply_text: tonalityText, buttons },
+      ];
+      logger.debug({ userId, messageId }, 'Tonality handled with static response');
+      return { ...state, assistantReply: replies };
+    }
+
+    if (generalIntent === 'chat') {
+      // Inline chat handling logic
+      const tools = [fetchRelevantMemories(userId)];
+      const systemPromptText = await loadPrompt('handlers/general/handle_chat.txt');
+      const systemPrompt = new SystemMessage(systemPromptText);
+
+      const finalResponse = await agentExecutor(
+        getTextLLM(),
+        systemPrompt,
+        conversationHistoryTextOnly,
+        { tools, outputSchema: LLMOutputSchema, nodeName: 'handleGeneral' },
+        traceBuffer,
+      );
+
+      const replies: Replies = [{ reply_type: 'text', reply_text: finalResponse.message1_text }];
+      if (finalResponse.message2_text) {
+        replies.push({ reply_type: 'text', reply_text: finalResponse.message2_text });
+      }
+
+      logger.debug({ userId, messageId }, 'Chat handled');
+      return { ...state, assistantReply: replies };
+    }
+
+    throw new InternalServerError(`Unhandled general intent: ${generalIntent}`);
+
+  } catch (err: unknown) {
+    throw new InternalServerError('Failed to handle general intent', {
+      cause: err,
+    });
   }
-  return { replies };
 }

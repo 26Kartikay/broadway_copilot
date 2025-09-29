@@ -1,37 +1,32 @@
 #Build stage
-FROM node:22-alpine AS build
+FROM node:22 AS build
 
 WORKDIR /app
 
 COPY package*.json .
 
-RUN npm install
+RUN npm ci --legacy-peer-deps
+
+COPY prisma ./prisma
+RUN npx prisma generate
 
 COPY . .
-
 RUN npm run build
 
 #Production stage
-FROM node:22-alpine AS production
-
-ENV NODE_ENV=production 
-ENV TWILIO_MENU_SID=HXb2342e0bd558f573290cc31bfa243bf3
-ENV TWILIO_CARD_SID=HXc1f7d7f812161326aee81a806014790d
-ENV TWILIO_WHATSAPP_FROM=whatsapp:+14155238886
-ENV PORT=8080
+FROM node:22 AS production
 
 WORKDIR /app
 
 COPY package*.json .
 
-RUN npm ci --only=production
+RUN npm ci --legacy-peer-deps --only=production
 
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/prompts ./prompts
 COPY --from=build /app/prisma ./prisma
-
-RUN npx prisma generate
+COPY --from=build /app/node_modules/.prisma/client ./node_modules/.prisma/client
 
 EXPOSE 8080
 
-CMD ["npm", "start"]
+CMD ["node", "dist/index.js"]
