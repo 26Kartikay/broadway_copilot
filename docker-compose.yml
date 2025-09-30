@@ -97,7 +97,7 @@ services:
       - /usr/src/app/functions
 
   db:
-    image: pgvector/pgvector:pg16-bookworm
+    image: pgvector/pgvector:0.8.0-pg17
     command:
       - postgres
       - -c
