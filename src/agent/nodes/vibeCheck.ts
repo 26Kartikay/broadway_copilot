@@ -27,7 +27,6 @@ const LLMOutputSchema = z.object({
   overall_score: z.number().min(0).max(10).describe("Overall fractional score for the outfit."),
   recommendations: z.array(z.string()).describe("Actionable style suggestions."),
   prompt: z.string().describe("The original input prompt or context."),
-  follow_up: z.string().describe("Follow-up question or suggestion."),
 });
 
 const NoImageLLMOutputSchema = z.object({
@@ -37,9 +36,8 @@ const NoImageLLMOutputSchema = z.object({
 const tonalityButtons: QuickReplyButton[] = [
   { text: ' Friendly', id: 'friendly' },
   { text: ' Savage', id: 'savage' },
-  { text: ' Hype BFF', id: 'hype_bff' }
+  { text: ' Hype BFF', id: 'hype_bff' },
 ];
-
 
 export async function vibeCheck(state: GraphState): Promise<GraphState> {
   logger.debug({
@@ -112,7 +110,6 @@ export async function vibeCheck(state: GraphState): Promise<GraphState> {
       overall_score: result.overall_score,
       recommendations: result.recommendations,
       prompt: result.prompt,
-      follow_up: result.follow_up,
       tonality: state.selectedTonality, // save the selected tonality
     };
 
@@ -132,26 +129,24 @@ export async function vibeCheck(state: GraphState): Promise<GraphState> {
         reply_text: `
 ✨ *Vibe Check Results* ✨
 
-📝 *Comment*: ${result.comment}
+${result.comment}
 
-👕 *Fit & Silhouette*: ${result.fit_silhouette.score}/10  
+👕 *Fit & Silhouette*: ${result.fit_silhouette.score}/10  
 _${result.fit_silhouette.explanation}_
 
-🎨 *Color Harmony*: ${result.color_harmony.score}/10  
+🎨 *Color Harmony*: ${result.color_harmony.score}/10  
 _${result.color_harmony.explanation}_
 
-🧢 *Styling Details*: ${result.styling_details.score}/10  
+🧢 *Styling Details*: ${result.styling_details.score}/10  
 _${result.styling_details.explanation}_
 
-🎯 *Context Confidence*: ${result.context_confidence.score}/10  
+🎯 *Context Confidence*: ${result.context_confidence.score}/10  
 _${result.context_confidence.explanation}_
 
 ⭐ *Overall Score*: *${result.overall_score.toFixed(1)}/10*
 
-💡 *Recommendations*:  
-${result.recommendations.map((rec, i) => `   ${i + 1}. ${rec}`).join('\n')}
-
-👉 ${result.follow_up}
+💡 *Recommendations*:  
+${result.recommendations.map((rec, i) => `   ${i + 1}. ${rec}`).join('\n')}
         `.trim(),
       },
     ];

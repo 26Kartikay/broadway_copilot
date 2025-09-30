@@ -11,9 +11,6 @@ import { loadPrompt } from '../../utils/prompts';
 import { PendingType } from '@prisma/client';
 import { GraphState, Replies } from '../state';
 
-/**
- * Schema for a color object with name and hex code.
- */
 const ColorObjectSchema = z.object({
   name: z
     .string()
@@ -24,9 +21,6 @@ const ColorObjectSchema = z.object({
     .describe('The representative hex color code (#RRGGBB).'),
 });
 
-/**
- * Schema for the LLM output in color analysis.
- */
 const LLMOutputSchema = z.object({
   compliment: z.string().describe("A short compliment for the user (e.g., 'Looking sharp and confident!')."),
   palette_name: z
@@ -55,17 +49,12 @@ const NoImageLLMOutputSchema = z.object({
     .describe('The text to send to the user explaining they need to send an image.'),
 });
 
-/**
- * Performs color analysis from a portrait and returns a WhatsApp-friendly text reply; logs and persists results.
- * @param state The current agent state.
- */
 export async function colorAnalysis(state: GraphState): Promise<GraphState> {
   const userId = state.user.id;
   const messageId = state.input.MessageSid;
 
   const imageCount = numImagesInMessage(state.conversationHistoryWithImages);
 
-  // No image case
   if (imageCount === 0) {
     const systemPromptText = await loadPrompt('handlers/analysis/no_image_request.txt');
     const systemPrompt = new SystemMessage(
@@ -89,7 +78,6 @@ export async function colorAnalysis(state: GraphState): Promise<GraphState> {
     };
   }
 
-  // Image present: run color analysis
   try {
     const systemPromptText = await loadPrompt('handlers/analysis/color_analysis.txt');
     const systemPrompt = new SystemMessage(systemPromptText);
@@ -98,7 +86,7 @@ export async function colorAnalysis(state: GraphState): Promise<GraphState> {
       .withStructuredOutput(LLMOutputSchema)
       .run(systemPrompt, state.conversationHistoryWithImages, state.traceBuffer, 'colorAnalysis');
 
-    // Save results to DB
+    // Save results to DB including compliment
     const [, user] = await prisma.$transaction([
       prisma.colorAnalysis.create({
         data: {
@@ -117,7 +105,7 @@ export async function colorAnalysis(state: GraphState): Promise<GraphState> {
       }),
     ]);
 
-    // Format a single WhatsApp-friendly message
+    // Format a WhatsApp-friendly message showing color names only
     const formattedMessage = `
 🎨 *Your Color Palette: ${output.palette_name ?? 'Unknown'}*
 

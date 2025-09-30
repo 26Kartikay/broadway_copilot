@@ -187,7 +187,7 @@ model VibeCheck {
   id                         Int      @id @default(autoincrement())
   userId                     String
   user                       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
+
   comment                    String
   fit_silhouette_score       Float
   fit_silhouette_explanation String
@@ -200,11 +200,11 @@ model VibeCheck {
   overall_score              Float
   recommendations            String[]
   prompt                     String
-  follow_up                  String
-  tonality                   String?
+  tonality                   String?   // optional
 
   @@map("vibe_check")
 }
+
 
 
 model ColorAnalysis {
