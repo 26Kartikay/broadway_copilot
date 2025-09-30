@@ -11,6 +11,7 @@ pnpm-debug.log*
 .env.development.local
 .env.test.local
 .env.production.local
+*.local.json
 
 # Build outputs
 dist/
@@ -73,3 +74,9 @@ uploads/
 
 # TypeScript
 *.tsbuildinfo
+
+# Prisma (optional migrations folder)
+prisma/migrations/
+
+# Sensitive keys folder
+keys/
